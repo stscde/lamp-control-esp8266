@@ -1,4 +1,4 @@
-/* 
+/*
  *  Simple lamp controller for ESP8266. Turns on/off a lamp based on the level of a light sensor.
  */
 #include <Arduino.h>
@@ -6,8 +6,8 @@
 
 #define IOTWEBCONF_PASSWORD_LEN 65
 #include <IotWebConf.h>
-#include <IotWebConfUsing.h>  // This loads aliases for easier class names.
 #include <IotWebConfTParameter.h>
+#include <IotWebConfUsing.h>  // This loads aliases for easier class names.
 
 // Relay Status 0 = aus, 1 = an
 int relayState = 0;
@@ -76,62 +76,45 @@ IotWebConfParameterGroup groupSettings = IotWebConfParameterGroup("groupSettings
 
 // Parameter for seconds to delay on/off switch
 iotwebconf::IntTParameter<int16_t> settingDelayParam =
-  iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDelayParam").
-  label("Delay switch seconds").
-  defaultValue(30).
-  min(1).
-  max(100).
-  step(1).
-  placeholder("1..100").
-  build();
+    iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDelayParam").label("Delay switch seconds").defaultValue(30).min(1).max(100).step(1).placeholder("1..100").build();
 
-
-// Parameter for light level which is treated as "dark" 
+// Parameter for light level which is treated as "dark"
 // if light level is below this level for more then "delay switch seconds" the lamp will be turned on
 // if light level is above this level for more then "delay switch seconds" the lamp will be turned of
 iotwebconf::IntTParameter<int16_t> settingDarkLevelParam =
-  iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDarkLevelParam").
-  label("Dark level").
-  defaultValue(25).
-  min(1).
-  max(100).
-  step(1).
-  placeholder("1..100").
-  build();
-
+    iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDarkLevelParam").label("Dark level").defaultValue(25).min(1).max(100).step(1).placeholder("1..100").build();
 
 // ##########################################
 // General Setup ############################
 // ##########################################
 
-void setup()
-{
-  // PIN Initialisierung
-  pinMode(D5, OUTPUT);
-  pinMode(D8, OUTPUT);
+void setup() {
+    // PIN Initialisierung
+    pinMode(D5, OUTPUT);
+    pinMode(D8, OUTPUT);
 
-  Serial.begin(115200);
+    Serial.begin(115200);
 
-  // -- Initializing the configuration.
-  groupSettings.addItem(&settingDelayParam);
-  groupSettings.addItem(&settingDarkLevelParam);
-  iotWebConf.addParameterGroup(&groupSettings);
+    // -- Initializing the configuration.
+    groupSettings.addItem(&settingDelayParam);
+    groupSettings.addItem(&settingDarkLevelParam);
+    iotWebConf.addParameterGroup(&groupSettings);
 
-  iotWebConf.setWifiConnectionCallback(&wifiConnected);
-  iotWebConf.setConfigSavedCallback(&configSaved);
-  iotWebConf.setStatusPin(LED_BUILTIN);
-  //iotWebConf.setConfigPin(D5);
-  iotWebConf.init();
+    iotWebConf.setWifiConnectionCallback(&wifiConnected);
+    iotWebConf.setConfigSavedCallback(&configSaved);
+    iotWebConf.setStatusPin(LED_BUILTIN);
+    // iotWebConf.setConfigPin(D5);
+    iotWebConf.init();
 
-  // -- Set up required URL handlers on the web server.
-  server.on("/", [] { iotWebConf.handleConfig(); });
-  server.onNotFound([]() { iotWebConf.handleNotFound(); });
+    // -- Set up required URL handlers on the web server.
+    server.on("/", [] { iotWebConf.handleConfig(); });
+    server.onNotFound([]() { iotWebConf.handleNotFound(); });
 
-  // turn relay of on start
-  switchRelayOff();
- 
-  // check light condition every second
-  timer.in(1000L, checkSwitchConditions);
+    // turn relay of on start
+    switchRelayOff();
+
+    // check light condition every second
+    timer.in(1000L, checkSwitchConditions);
 }
 
 // ##########################################
@@ -139,128 +122,135 @@ void setup()
 // ##########################################
 
 void loop() {
-  timer.tick();
-}
+    if (needReset) {
+        // config changes require reset
+        Serial.println("restart in 1 sec");
+        delay(1000);
+        ESP.restart();
+    }
 
+    timer.tick();
+    iotWebConf.doLoop();
+}
 
 /**
  * Relay on
  */
 void switchRelayOn() {
-  digitalWrite(D5, LOW); // Relay on
-  digitalWrite(D8, HIGH); // LED on
-  relayState = 1;
+    digitalWrite(D5, LOW);   // Relay on
+    digitalWrite(D8, HIGH);  // LED on
+    relayState = 1;
 }
 
-
-/** 
+/**
  *  Relay off
  */
 void switchRelayOff() {
-  digitalWrite(D5, HIGH); // Relay of
-  digitalWrite(D8, LOW); // LED off
-  relayState = 0;
+    digitalWrite(D5, HIGH);  // Relay of
+    digitalWrite(D8, LOW);   // LED off
+    relayState = 0;
 }
-
 
 /**
  * Update light value and check wheather to turn relay on or off
  */
 void updateLightValue() {
-  lightLevel = analogRead(A0);
-  boolean newLightConditionDark = false;
-  
-  int darkLevelSetting = settingDarkLevelParam.value();
-  if (lightLevel <= darkLevelSetting) {
-    newLightConditionDark = true;
-  }
-  else {
-    newLightConditionDark = false;
-  }
+    lightLevel = analogRead(A0);
+    boolean newLightConditionDark = false;
 
-  // remember time of current light state to prevent relay toggling
-  if (newLightConditionDark == lightConditionDark) {
-    currLightConditionCycles = currLightConditionCycles + 1;
-  }
-  else {
-    currLightConditionCycles = 0;
-  }
+    int darkLevelSetting = settingDarkLevelParam.value();
+    if (lightLevel <= darkLevelSetting) {
+        newLightConditionDark = true;
+    } else {
+        newLightConditionDark = false;
+    }
 
-  lightConditionDark = newLightConditionDark;
-  
-  // prevent int overflow
-  int cyclesRequiredForRelayChange = settingDelayParam.value();
-  if (currLightConditionCycles > cyclesRequiredForRelayChange) {
-     currLightConditionCycles = cyclesRequiredForRelayChange;
-  }
+    // remember time of current light state to prevent relay toggling
+    if (newLightConditionDark == lightConditionDark) {
+        currLightConditionCycles = currLightConditionCycles + 1;
+    } else {
+        currLightConditionCycles = 0;
+    }
+
+    lightConditionDark = newLightConditionDark;
+
+    // prevent int overflow
+    int cyclesRequiredForRelayChange = settingDelayParam.value();
+    if (currLightConditionCycles > cyclesRequiredForRelayChange) {
+        currLightConditionCycles = cyclesRequiredForRelayChange;
+    }
 }
-
 
 /**
  * Update light value and check wheather to turn relay on or off
  */
 bool checkSwitchConditions(void *argument) {
-  // read sensor
-  updateLightValue();
+    // read sensor
+    updateLightValue();
 
-  // check if switch on/off is required
-  int cyclesRequiredForRelayChange = settingDelayParam.value();
-  int darkLevelSetting = settingDarkLevelParam.value();
+    // check if switch on/off is required
+    int cyclesRequiredForRelayChange = settingDelayParam.value();
+    int darkLevelSetting = settingDarkLevelParam.value();
 
-  boolean switchAllowedByTime = currLightConditionCycles >= cyclesRequiredForRelayChange;
-  switchConditionInfo = "Info: lightLevel: " + String(lightLevel) + ", DARK_IS_WHEN_LEVEL_LOWER_EQ: " + String(darkLevelSetting) + ", switchAllowedByTime: " + String(switchAllowedByTime)  + ", relayState: " + String(relayState) + ", lightConditionDark: " + String(lightConditionDark) + ", currLightConditionCycles: " + String(currLightConditionCycles);
-  
-  // light off - turn on?
-  if (relayState == 0) {
-    if (lightConditionDark && switchAllowedByTime) {
-      switchRelayOn();
+    boolean switchAllowedByTime = currLightConditionCycles >= cyclesRequiredForRelayChange;
+    switchConditionInfo = "Info: lightLevel: " + String(lightLevel) + ", DARK_IS_WHEN_LEVEL_LOWER_EQ: " + String(darkLevelSetting) + ", switchAllowedByTime: " + String(switchAllowedByTime) + ", relayState: " + String(relayState) + ", lightConditionDark: " + String(lightConditionDark) + ", currLightConditionCycles: " + String(currLightConditionCycles);
+
+    // light off - turn on?
+    if (relayState == 0) {
+        if (lightConditionDark && switchAllowedByTime) {
+            switchRelayOn();
+        }
     }
-  }
-  // light on - turn off?
-  else {
-    if (!lightConditionDark && switchAllowedByTime) {
-      switchRelayOff();
+    // light on - turn off?
+    else {
+        if (!lightConditionDark && switchAllowedByTime) {
+            switchRelayOff();
+        }
     }
-  }
 
-  // keep timer running
-  return true;
+    // keep timer running
+    return true;
 }
 
 void configSaved() {
+    Serial.println("config saved");
+    needReset = true;
 }
 
 void wifiConnected() {
-}
+    connected = true;
+    Serial.println("wifi connected");
 
+    // hack for getting hostname set correctly
+    WiFi.hostname(iotWebConf.getThingName());
+    WiFi.begin();
+}
 
 /**
  * Handle web requests to "/" path.
  */
-void handleRoot()
-{
-  // -- Let IotWebConf test and handle captive portal requests.
-  if (iotWebConf.handleCaptivePortal())
-  {
-    // -- Captive portal request were already served.
-    return;
-  }
-  String s = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
-  s += "<title>Lamp control parameters and values</title></head><body>Current settings and values";
-  s += "<ul>";
-  s += "<li>Delay param value: ";
-  s += settingDelayParam.value();
-  s += "<li>Dark value param value: ";
-  s += settingDarkLevelParam.value();
-  s += "<li>Current light status value: ";
-  s += relayState;
-  s += "<li>Current light level value: ";
-  s += lightLevel;
-  s += "<li>Current seconds on light level value: ";
-  s += currLightConditionCycles;
-  s += "</ul>";
-  s += "Go to <a href='config'>configure page</a> to change values.";
-  s += "</body></html>\n";
+void handleRoot() {
+    // -- Let IotWebConf test and handle captive portal requests.
+    if (iotWebConf.handleCaptivePortal()) {
+        // -- Captive portal request were already served.
+        return;
+    }
+    String s = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
+    s += "<title>Lamp control parameters and values</title></head><body>Current settings and values";
+    s += "<ul>";
+    s += "<li>Delay param value: ";
+    s += settingDelayParam.value();
+    s += "<li>Dark value param value: ";
+    s += settingDarkLevelParam.value();
+    s += "<li>Current light status value: ";
+    s += relayState;
+    s += "<li>Current light level value: ";
+    s += lightLevel;
+    s += "<li>Current seconds on light level value: ";
+    s += currLightConditionCycles;
+    s += "</ul>";
+    s += "Go to <a href='config'>configure page</a> to change values.";
+    s += "</body></html>\n";
 
-  server.send(200, "text/html", s);
+    server.send(200, "text/html", s);
 }
