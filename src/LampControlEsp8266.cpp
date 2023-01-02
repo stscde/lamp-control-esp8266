@@ -89,11 +89,15 @@ iotwebconf::IntTParameter<int16_t> settingDarkLevelParam =
 // ##########################################
 
 void setup() {
-    // PIN Initialisierung
+
+    Serial.begin(115200);
+    delay(100);
+    Serial.println("Initializing");
+
+    // PIN init
     pinMode(D5, OUTPUT);
     pinMode(D8, OUTPUT);
 
-    Serial.begin(115200);
 
     // -- Initializing the configuration.
     groupSettings.addItem(&settingDelayParam);
@@ -107,14 +111,15 @@ void setup() {
     iotWebConf.init();
 
     // -- Set up required URL handlers on the web server.
-    server.on("/", [] { iotWebConf.handleConfig(); });
+    server.on("/", handleRoot);
+    server.on("/config", []{ iotWebConf.handleConfig(); });
     server.onNotFound([]() { iotWebConf.handleNotFound(); });
 
     // turn relay of on start
     switchRelayOff();
 
     // check light condition every second
-    timer.in(1000L, checkSwitchConditions);
+    timer.every(1000L, checkSwitchConditions);
 }
 
 // ##########################################
@@ -185,6 +190,8 @@ void updateLightValue() {
  * Update light value and check wheather to turn relay on or off
  */
 bool checkSwitchConditions(void *argument) {
+    //Serial.println("Checking light conditions");
+
     // read sensor
     updateLightValue();
 
@@ -219,11 +226,7 @@ void configSaved() {
 
 void wifiConnected() {
     connected = true;
-    Serial.println("wifi connected");
-
-    // hack for getting hostname set correctly
-    WiFi.hostname(iotWebConf.getThingName());
-    WiFi.begin();
+    Serial.println("### WiFi connected ###");
 }
 
 /**
