@@ -3,6 +3,7 @@
  */
 #include <Arduino.h>
 #include <arduino-timer.h>
+#include <time.h>
 
 #define IOTWEBCONF_PASSWORD_LEN 65
 #include <IotWebConf.h>
@@ -33,6 +34,15 @@ const unsigned long SERIAL_BAUD_RATE = 115200;
 // method to be called by timer every 1 second
 bool checkSwitchConditions(void *argument);
 
+// method to be called by timer once a day to (re-)synchronize time via NTP
+bool ntpDailySyncTimerCallback(void *argument);
+
+// synchronize time via NTP, but only while online (WiFi connected, not AP mode)
+void syncTimeViaNtp();
+
+// current time formatted for display, or a placeholder if not yet synchronized
+String getCurrentTimeString();
+
 // switch relay off
 void switchRelayOff();
 
@@ -58,7 +68,9 @@ boolean needReset = false;
 boolean connected = false;
 
 // IotWebConf: Modifying the config version will probably cause a loss of the existig configuration. Be careful!
-const char *CONFIG_VERSION = "1.0.2";
+// Note: only the first 4 bytes are actually compared/stored (IOTWEBCONF_CONFIG_VERSION_LENGTH),
+// so keep this at 3 characters (+ implicit null terminator) and change it within those 3 to force a reset.
+const char *CONFIG_VERSION = "1.1";
 
 // IotWebConf: Access point SSID
 const char *WIFI_AP_SSID = "LampControl";
@@ -93,6 +105,21 @@ iotwebconf::IntTParameter<int16_t> settingDelayParam =
 iotwebconf::IntTParameter<int16_t> settingDarkLevelParam =
     iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDarkLevelParam").label("Dark level").defaultValue(25).min(1).max(100).step(1).placeholder("1..100").build();
 
+// Parameter for the NTP server used for time synchronization
+iotwebconf::TextTParameter<64> settingNtpServerParam =
+    iotwebconf::Builder<iotwebconf::TextTParameter<64>>("settingNtpServerParam").label("NTP server").defaultValue("pool.ntp.org").build();
+
+// Parameter for the timezone (POSIX TZ string, e.g. from TZ.h), used to convert
+// the NTP-synchronized UTC time into local time including DST rules.
+iotwebconf::TextTParameter<48> settingTimezoneParam =
+    iotwebconf::Builder<iotwebconf::TextTParameter<48>>("settingTimezoneParam").label("Timezone").defaultValue("CET-1CEST,M3.5.0,M10.5.0/3").build();
+
+// epoch time of 2020-01-01 00:00:00 UTC, used to detect a successful NTP sync
+const time_t NTP_SYNC_MIN_EPOCH = 1577836800;
+
+// has the first successful NTP time sync already happened and been reported on serial?
+bool initialTimeSyncDone = false;
+
 // ##########################################
 // General Setup ############################
 // ##########################################
@@ -111,6 +138,9 @@ void setup() {
     // -- Initializing the configuration.
     groupSettings.addItem(&settingDelayParam);
     groupSettings.addItem(&settingDarkLevelParam);
+    groupSettings.addItem(&settingNtpServerParam);
+    groupSettings.addItem(&settingTimezoneParam);
+    settingTimezoneParam.setPlaceholder("POSIX TZ, e.g. CET-1CEST,M3.5.0,M10.5.0/3 for Europe/Berlin");
     iotWebConf.addParameterGroup(&groupSettings);
 
     iotWebConf.setWifiConnectionCallback(&wifiConnected);
@@ -143,6 +173,9 @@ void setup() {
 
     // check light condition every second
     timer.every(1000L, checkSwitchConditions);
+
+    // re-synchronize time via NTP once a day (initial sync happens on WiFi connect)
+    timer.every(86400000UL, ntpDailySyncTimerCallback);
 }
 
 // ##########################################
@@ -375,11 +408,74 @@ void configSaved() {
     needReset = true;
 }
 
+/**
+ * Waits until the system clock reports a plausible time (i.e. NTP sync succeeded)
+ * or the timeout elapses. Returns true if the sync was detected in time.
+ */
+bool waitForTimeSync(unsigned long timeoutMs) {
+    unsigned long start = millis();
+    while (time(nullptr) < NTP_SYNC_MIN_EPOCH) {
+        if (millis() - start > timeoutMs) {
+            return false;
+        }
+        delay(200);
+    }
+    return true;
+}
+
+/**
+ * Synchronizes the system time via NTP, but only while online (WiFi connected in
+ * station mode, not serving the config access point). After the first successful
+ * sync, the resulting time is printed to serial.
+ */
+void syncTimeViaNtp() {
+    if (iotWebConf.getState() != iotwebconf::OnLine) {
+        return;
+    }
+
+    Serial.print("Synchronizing time via NTP server ");
+    Serial.print(settingNtpServerParam.value());
+    Serial.print(" (timezone: ");
+    Serial.print(settingTimezoneParam.value());
+    Serial.println(")");
+    configTime(settingTimezoneParam.value(), settingNtpServerParam.value());
+
+    if (!initialTimeSyncDone) {
+        if (waitForTimeSync(10000)) {
+            Serial.print("Time synchronized: ");
+            Serial.println(getCurrentTimeString());
+            initialTimeSyncDone = true;
+        } else {
+            Serial.println("Time sync did not complete within timeout; will retry.");
+        }
+    }
+}
+
+bool ntpDailySyncTimerCallback(void *argument) {
+    syncTimeViaNtp();
+    return true;
+}
+
+/**
+ * Returns the current local time (per the configured timezone) formatted as
+ * "YYYY-MM-DD HH:MM:SS ZZZ", or a placeholder string if NTP has not synchronized yet.
+ */
+String getCurrentTimeString() {
+    time_t now = time(nullptr);
+    if (now < NTP_SYNC_MIN_EPOCH) {
+        return "not yet synchronized";
+    }
+    char timeBuffer[32];
+    strftime(timeBuffer, sizeof(timeBuffer), "%Y-%m-%d %H:%M:%S %Z", localtime(&now));
+    return String(timeBuffer);
+}
+
 void wifiConnected() {
     connected = true;
     Serial.println("### WiFi connected ###");
     Serial.print("IP address: ");
     Serial.println(WiFi.localIP());
+    syncTimeViaNtp();
 }
 
 /**
@@ -404,6 +500,8 @@ void handleRoot() {
     s += lightLevel;
     s += "<li>Current seconds on light level value: ";
     s += currLightConditionCycles;
+    s += "<li>Current time: ";
+    s += getCurrentTimeString();
     s += "</ul>";
     s += "Go to <a href='config'>configure page</a> to change values (user: admin).";
     s += "<p>A configuration menu is also available via the serial interface at ";
