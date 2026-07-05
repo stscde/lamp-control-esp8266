@@ -27,11 +27,20 @@ int currLightConditionCycles = 0;
 // timer to check light status every second only
 auto timer = timer_create_default();
 
+// baud rate used for the serial interface and its settings menu
+const unsigned long SERIAL_BAUD_RATE = 115200;
+
 // method to be called by timer every 1 second
 bool checkSwitchConditions(void *argument);
 
 // switch relay off
 void switchRelayOff();
+
+// interactive serial settings menu (requires a physical USB/serial connection)
+void runSerialSettingsMenu();
+
+// blocks until a full line is entered on Serial, echoing typed characters back
+String readSerialLine();
 
 // ### IotWebConf #############################################################
 // ############################################################################
@@ -90,7 +99,7 @@ iotwebconf::IntTParameter<int16_t> settingDarkLevelParam =
 
 void setup() {
 
-    Serial.begin(115200);
+    Serial.begin(SERIAL_BAUD_RATE);
     delay(100);
     Serial.println("Initializing");
 
@@ -109,6 +118,20 @@ void setup() {
     iotWebConf.setStatusPin(LED_BUILTIN);
     // iotWebConf.setConfigPin(D5);
     iotWebConf.init();
+
+    // -- Offer the interactive settings menu on serial. This can only be
+    //    triggered with a physical USB/serial connection, never over WLAN.
+    Serial.println("Press 's' + Enter within 30 seconds to open the settings menu...");
+    unsigned long settingsMenuDeadline = millis() + 30000;
+    while (millis() < settingsMenuDeadline) {
+        if (Serial.available()) {
+            String input = readSerialLine();
+            if (input.equalsIgnoreCase("s")) {
+                runSerialSettingsMenu();
+            }
+            break;
+        }
+    }
 
     // -- Set up required URL handlers on the web server.
     server.on("/", handleRoot);
@@ -219,6 +242,134 @@ bool checkSwitchConditions(void *argument) {
     return true;
 }
 
+/**
+ * Blocks until a full line is entered on Serial, echoing each typed character back.
+ * Accepts '\r', '\n' or "\r\n"/"\n\r" as line ending, since terminals differ in what
+ * they send for Enter; without this, Serial's built-in read timeout can otherwise cut
+ * off input before Enter is pressed.
+ */
+String readSerialLine() {
+    String line = "";
+    while (true) {
+        if (Serial.available()) {
+            char c = Serial.read();
+            if (c == '\r' || c == '\n') {
+                delay(2);
+                if (Serial.available()) {
+                    char next = Serial.peek();
+                    if ((next == '\r' || next == '\n') && next != c) {
+                        Serial.read();
+                    }
+                }
+                Serial.println();
+                break;
+            } else if (c == '\b' || c == 127) {
+                if (line.length() > 0) {
+                    line.remove(line.length() - 1);
+                    Serial.print("\b \b");
+                }
+            } else {
+                line += c;
+                Serial.write(c);
+            }
+        } else {
+            delay(10);
+        }
+    }
+    line.trim();
+    return line;
+}
+
+/**
+ * Prompts for a new value on serial and writes it into the parameter's buffer.
+ * Does not persist the change; call iotWebConf.saveConfig() afterwards.
+ */
+bool updateParameterFromSerial(iotwebconf::Parameter *parameter, const char *label) {
+    Serial.print("New value for ");
+    Serial.print(label);
+    Serial.print(" (max ");
+    Serial.print(parameter->getLength() - 1);
+    Serial.println(" chars, empty = cancel):");
+    Serial.print("> ");
+    String value = readSerialLine();
+    if (value.length() == 0) {
+        Serial.println("Cancelled.");
+        return false;
+    }
+    strncpy(parameter->valueBuffer, value.c_str(), parameter->getLength() - 1);
+    parameter->valueBuffer[parameter->getLength() - 1] = '\0';
+    Serial.println("Value updated (not yet saved).");
+    return true;
+}
+
+/**
+ * Prints a numbered menu entry followed by the parameter's current value, tab-aligned.
+ * The number of tabs is calculated (assuming 8-column tab stops) so the value always
+ * starts at the same column, regardless of how long the label is.
+ */
+void printMenuItem(const char *number, const char *label, iotwebconf::Parameter *parameter) {
+    const int tabWidth = 8;
+    const int targetColumn = 40;
+
+    String prefix = String(number) + ") " + label;
+    Serial.print(prefix);
+    int column = prefix.length();
+    do {
+        Serial.print('\t');
+        column += tabWidth - (column % tabWidth);
+    } while (column < targetColumn);
+
+    String value(parameter->valueBuffer);
+    Serial.println(value.length() == 0 ? String("[not set]") : "[" + value + "]");
+}
+
+/**
+ * Interactive serial menu to update WiFi/config portal credentials.
+ * Only reachable via a physical USB/serial connection, never over WLAN.
+ */
+void runSerialSettingsMenu() {
+    bool changed = false;
+    while (true) {
+        Serial.println();
+        Serial.println("=== Settings menu ===");
+        printMenuItem("1", "Set WiFi SSID", iotWebConf.getWifiSsidParameter());
+        printMenuItem("2", "Set WiFi password", iotWebConf.getWifiPasswordParameter());
+        printMenuItem("3", "Set config portal password", iotWebConf.getApPasswordParameter());
+        Serial.println("4) Save and restart");
+        Serial.println("5) Exit without saving");
+        Serial.println("6) Reset all settings to defaults");
+        Serial.print("> ");
+
+        String choice = readSerialLine();
+
+        if (choice == "1") {
+            changed |= updateParameterFromSerial(iotWebConf.getWifiSsidParameter(), "WiFi SSID");
+        } else if (choice == "2") {
+            changed |= updateParameterFromSerial(iotWebConf.getWifiPasswordParameter(), "WiFi password");
+        } else if (choice == "3") {
+            changed |= updateParameterFromSerial(iotWebConf.getApPasswordParameter(), "config portal password");
+        } else if (choice == "4") {
+            if (changed) {
+                iotWebConf.saveConfig();
+                Serial.println("Settings saved. Restarting...");
+                delay(500);
+                ESP.restart();
+            } else {
+                Serial.println("Nothing changed.");
+            }
+        } else if (choice == "5") {
+            Serial.println("Exiting settings menu without saving.");
+            return;
+        } else if (choice == "6") {
+            iotWebConf.getSystemParameterGroup()->applyDefaultValue();
+            changed = true;
+            Serial.println("All settings reset to defaults (not yet saved).");
+        } else {
+            Serial.println("Invalid option.");
+        }
+    }
+}
+
 void configSaved() {
     Serial.println("config saved");
     needReset = true;
@@ -227,6 +378,8 @@ void configSaved() {
 void wifiConnected() {
     connected = true;
     Serial.println("### WiFi connected ###");
+    Serial.print("IP address: ");
+    Serial.println(WiFi.localIP());
 }
 
 /**
@@ -252,7 +405,10 @@ void handleRoot() {
     s += "<li>Current seconds on light level value: ";
     s += currLightConditionCycles;
     s += "</ul>";
-    s += "Go to <a href='config'>configure page</a> to change values.";
+    s += "Go to <a href='config'>configure page</a> to change values (user: admin).";
+    s += "<p>A configuration menu is also available via the serial interface at ";
+    s += SERIAL_BAUD_RATE;
+    s += " baud, which can also be used to set or reset the config portal password.</p>";
     s += "</body></html>\n";
 
     server.send(200, "text/html", s);
