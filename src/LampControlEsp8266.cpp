@@ -9,10 +9,10 @@
 #include <IotWebConfTParameter.h>
 #include <IotWebConfUsing.h>  // This loads aliases for easier class names.
 
-// Relay Status 0 = aus, 1 = an
+// Relay status 0 = off, 1 = on
 int relayState = 0;
 
-// Turn relay of because it is dark?
+// Turn relay off because it is dark?
 bool lightConditionDark = false;
 
 // light level 0 (dark) .. 1023 (bright)
@@ -79,8 +79,8 @@ iotwebconf::IntTParameter<int16_t> settingDelayParam =
     iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDelayParam").label("Delay switch seconds").defaultValue(30).min(1).max(100).step(1).placeholder("1..100").build();
 
 // Parameter for light level which is treated as "dark"
-// if light level is below this level for more then "delay switch seconds" the lamp will be turned on
-// if light level is above this level for more then "delay switch seconds" the lamp will be turned of
+// if light level is below this level for more than "delay switch seconds" the lamp will be turned on
+// if light level is above this level for more than "delay switch seconds" the lamp will be turned off
 iotwebconf::IntTParameter<int16_t> settingDarkLevelParam =
     iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDarkLevelParam").label("Dark level").defaultValue(25).min(1).max(100).step(1).placeholder("1..100").build();
 
@@ -115,7 +115,7 @@ void setup() {
     server.on("/config", []{ iotWebConf.handleConfig(); });
     server.onNotFound([]() { iotWebConf.handleNotFound(); });
 
-    // turn relay of on start
+    // turn relay off on start
     switchRelayOff();
 
     // check light condition every second
@@ -151,13 +151,13 @@ void switchRelayOn() {
  *  Relay off
  */
 void switchRelayOff() {
-    digitalWrite(D5, HIGH);  // Relay of
+    digitalWrite(D5, HIGH);  // Relay off
     digitalWrite(D8, LOW);   // LED off
     relayState = 0;
 }
 
 /**
- * Update light value and check wheather to turn relay on or off
+ * Update light value and check whether to turn relay on or off
  */
 void updateLightValue() {
     lightLevel = analogRead(A0);
@@ -187,7 +187,7 @@ void updateLightValue() {
 }
 
 /**
- * Update light value and check wheather to turn relay on or off
+ * Update light value and check whether to turn relay on or off
  */
 bool checkSwitchConditions(void *argument) {
     //Serial.println("Checking light conditions");
