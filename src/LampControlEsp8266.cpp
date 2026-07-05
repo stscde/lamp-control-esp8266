@@ -10,6 +10,8 @@
 #include <IotWebConfTParameter.h>
 #include <IotWebConfUsing.h>  // This loads aliases for easier class names.
 
+#include "DashboardPage.h"
+
 // Relay status 0 = off, 1 = on
 int relayState = 0;
 
@@ -114,11 +116,30 @@ iotwebconf::TextTParameter<64> settingNtpServerParam =
 iotwebconf::TextTParameter<48> settingTimezoneParam =
     iotwebconf::Builder<iotwebconf::TextTParameter<48>>("settingTimezoneParam").label("Timezone").defaultValue("CET-1CEST,M3.5.0,M10.5.0/3").build();
 
-// epoch time of 2020-01-01 00:00:00 UTC, used to detect a successful NTP sync
-const time_t NTP_SYNC_MIN_EPOCH = 1577836800;
-
 // has the first successful NTP time sync already happened and been reported on serial?
 bool initialTimeSyncDone = false;
+
+// manual override for the relay; never persisted, always resets to AUTO on boot
+LampMode lampMode = LAMP_MODE_AUTO;
+
+// rolling min/max light level per minute, covering the last 15 minutes
+const int MINUTE_BUCKET_COUNT = 15;
+int minuteMinLevel[MINUTE_BUCKET_COUNT];
+int minuteMaxLevel[MINUTE_BUCKET_COUNT];
+int currentMinuteBucket = 0;
+
+// rolling min/max light level per hour, covering the last 24 hours
+const int HOURLY_BUCKET_COUNT = 24;
+int hourlyMinLevel[HOURLY_BUCKET_COUNT];
+int hourlyMaxLevel[HOURLY_BUCKET_COUNT];
+int currentHourlyBucket = 0;
+
+// method to be called by timer once a minute/hour to rotate the light level buckets
+bool rotateMinuteBucket(void *argument);
+bool rotateHourlyBucket(void *argument);
+
+// IotWebConf: handles POST/GET requests to change the lamp mode (auto/on/off)
+void handleSetMode();
 
 // ##########################################
 // General Setup ############################
@@ -134,6 +155,15 @@ void setup() {
     pinMode(D5, OUTPUT);
     pinMode(D8, OUTPUT);
 
+    // -- Light level history buckets start out empty.
+    for (int i = 0; i < MINUTE_BUCKET_COUNT; i++) {
+        minuteMinLevel[i] = LIGHT_BUCKET_NO_DATA;
+        minuteMaxLevel[i] = LIGHT_BUCKET_NO_DATA;
+    }
+    for (int i = 0; i < HOURLY_BUCKET_COUNT; i++) {
+        hourlyMinLevel[i] = LIGHT_BUCKET_NO_DATA;
+        hourlyMaxLevel[i] = LIGHT_BUCKET_NO_DATA;
+    }
 
     // -- Initializing the configuration.
     groupSettings.addItem(&settingDelayParam);
@@ -166,6 +196,7 @@ void setup() {
     // -- Set up required URL handlers on the web server.
     server.on("/", handleRoot);
     server.on("/config", []{ iotWebConf.handleConfig(); });
+    server.on("/mode", handleSetMode);
     server.onNotFound([]() { iotWebConf.handleNotFound(); });
 
     // turn relay off on start
@@ -176,6 +207,10 @@ void setup() {
 
     // re-synchronize time via NTP once a day (initial sync happens on WiFi connect)
     timer.every(86400000UL, ntpDailySyncTimerCallback);
+
+    // rotate the light level history buckets once a minute / once an hour
+    timer.every(60000UL, rotateMinuteBucket);
+    timer.every(3600000UL, rotateHourlyBucket);
 }
 
 // ##########################################
@@ -213,10 +248,53 @@ void switchRelayOff() {
 }
 
 /**
+ * Records lightLevel into the currently active minute/hour history buckets,
+ * tracking the min and max value seen so far in each.
+ */
+void updateLightLevelBuckets() {
+    if (minuteMinLevel[currentMinuteBucket] == LIGHT_BUCKET_NO_DATA) {
+        minuteMinLevel[currentMinuteBucket] = lightLevel;
+        minuteMaxLevel[currentMinuteBucket] = lightLevel;
+    } else {
+        minuteMinLevel[currentMinuteBucket] = min(minuteMinLevel[currentMinuteBucket], lightLevel);
+        minuteMaxLevel[currentMinuteBucket] = max(minuteMaxLevel[currentMinuteBucket], lightLevel);
+    }
+
+    if (hourlyMinLevel[currentHourlyBucket] == LIGHT_BUCKET_NO_DATA) {
+        hourlyMinLevel[currentHourlyBucket] = lightLevel;
+        hourlyMaxLevel[currentHourlyBucket] = lightLevel;
+    } else {
+        hourlyMinLevel[currentHourlyBucket] = min(hourlyMinLevel[currentHourlyBucket], lightLevel);
+        hourlyMaxLevel[currentHourlyBucket] = max(hourlyMaxLevel[currentHourlyBucket], lightLevel);
+    }
+}
+
+/**
+ * Advances to the next minute bucket, once a minute.
+ */
+bool rotateMinuteBucket(void *argument) {
+    currentMinuteBucket = (currentMinuteBucket + 1) % MINUTE_BUCKET_COUNT;
+    minuteMinLevel[currentMinuteBucket] = LIGHT_BUCKET_NO_DATA;
+    minuteMaxLevel[currentMinuteBucket] = LIGHT_BUCKET_NO_DATA;
+    return true;
+}
+
+/**
+ * Advances to the next hourly bucket, once an hour.
+ */
+bool rotateHourlyBucket(void *argument) {
+    currentHourlyBucket = (currentHourlyBucket + 1) % HOURLY_BUCKET_COUNT;
+    hourlyMinLevel[currentHourlyBucket] = LIGHT_BUCKET_NO_DATA;
+    hourlyMaxLevel[currentHourlyBucket] = LIGHT_BUCKET_NO_DATA;
+    return true;
+}
+
+/**
  * Update light value and check whether to turn relay on or off
  */
 void updateLightValue() {
     lightLevel = analogRead(A0);
+    updateLightLevelBuckets();
     boolean newLightConditionDark = false;
 
     int darkLevelSetting = settingDarkLevelParam.value();
@@ -258,16 +336,26 @@ bool checkSwitchConditions(void *argument) {
     boolean switchAllowedByTime = currLightConditionCycles >= cyclesRequiredForRelayChange;
     switchConditionInfo = "Info: lightLevel: " + String(lightLevel) + ", DARK_IS_WHEN_LEVEL_LOWER_EQ: " + String(darkLevelSetting) + ", switchAllowedByTime: " + String(switchAllowedByTime) + ", relayState: " + String(relayState) + ", lightConditionDark: " + String(lightConditionDark) + ", currLightConditionCycles: " + String(currLightConditionCycles);
 
-    // light off - turn on?
-    if (relayState == 0) {
-        if (lightConditionDark && switchAllowedByTime) {
+    if (lampMode == LAMP_MODE_ON) {
+        if (relayState == 0) {
             switchRelayOn();
         }
-    }
-    // light on - turn off?
-    else {
-        if (!lightConditionDark && switchAllowedByTime) {
+    } else if (lampMode == LAMP_MODE_OFF) {
+        if (relayState == 1) {
             switchRelayOff();
+        }
+    } else {
+        // light off - turn on?
+        if (relayState == 0) {
+            if (lightConditionDark && switchAllowedByTime) {
+                switchRelayOn();
+            }
+        }
+        // light on - turn off?
+        else {
+            if (!lightConditionDark && switchAllowedByTime) {
+                switchRelayOff();
+            }
         }
     }
 
@@ -487,27 +575,42 @@ void handleRoot() {
         // -- Captive portal request were already served.
         return;
     }
-    String s = "<!DOCTYPE html><html lang=\"en\"><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1, user-scalable=no\"/>";
-    s += "<title>Lamp control parameters and values</title></head><body>Current settings and values";
-    s += "<ul>";
-    s += "<li>Delay param value: ";
-    s += settingDelayParam.value();
-    s += "<li>Dark value param value: ";
-    s += settingDarkLevelParam.value();
-    s += "<li>Current light status value: ";
-    s += relayState;
-    s += "<li>Current light level value: ";
-    s += lightLevel;
-    s += "<li>Current seconds on light level value: ";
-    s += currLightConditionCycles;
-    s += "<li>Current time: ";
-    s += getCurrentTimeString();
-    s += "</ul>";
-    s += "Go to <a href='config'>configure page</a> to change values (user: admin).";
-    s += "<p>A configuration menu is also available via the serial interface at ";
-    s += SERIAL_BAUD_RATE;
-    s += " baud, which can also be used to set or reset the config portal password.</p>";
-    s += "</body></html>\n";
 
-    server.send(200, "text/html", s);
+    DashboardData data;
+    data.relayState = relayState;
+    data.lightLevel = lightLevel;
+    data.darkLevel = settingDarkLevelParam.value();
+    data.delaySeconds = settingDelayParam.value();
+    data.currLightConditionCycles = currLightConditionCycles;
+    data.lampMode = lampMode;
+    data.ntpServer = settingNtpServerParam.value();
+    data.timezone = settingTimezoneParam.value();
+    data.wifiSsid = iotWebConf.getWifiSsidParameter()->valueBuffer;
+    data.currentTimeString = getCurrentTimeString();
+    data.minuteMinLevel = minuteMinLevel;
+    data.minuteMaxLevel = minuteMaxLevel;
+    data.minuteBucketCount = MINUTE_BUCKET_COUNT;
+    data.currentMinuteBucket = currentMinuteBucket;
+    data.hourlyMinLevel = hourlyMinLevel;
+    data.hourlyMaxLevel = hourlyMaxLevel;
+    data.hourlyBucketCount = HOURLY_BUCKET_COUNT;
+    data.currentHourlyBucket = currentHourlyBucket;
+
+    server.send(200, "text/html", renderDashboardPage(data));
+}
+
+/**
+ * Handle requests to "/mode" to switch between automatic and manual lamp control.
+ * Not persisted: lampMode always resets to LAMP_MODE_AUTO on boot.
+ */
+void handleSetMode() {
+    String value = server.arg("value");
+    if (value == "on") {
+        lampMode = LAMP_MODE_ON;
+    } else if (value == "off") {
+        lampMode = LAMP_MODE_OFF;
+    } else {
+        lampMode = LAMP_MODE_AUTO;
+    }
+    server.send(204);
 }
