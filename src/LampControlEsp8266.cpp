@@ -105,7 +105,7 @@ iotwebconf::IntTParameter<int16_t> settingDelayParam =
 // if light level is below this level for more than "delay switch seconds" the lamp will be turned on
 // if light level is above this level for more than "delay switch seconds" the lamp will be turned off
 iotwebconf::IntTParameter<int16_t> settingDarkLevelParam =
-    iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDarkLevelParam").label("Dark level").defaultValue(25).min(1).max(100).step(1).placeholder("1..100").build();
+    iotwebconf::Builder<iotwebconf::IntTParameter<int16_t>>("settingDarkLevelParam").label("Dark level").defaultValue(25).min(1).max(1023).step(1).placeholder("1..1023").build();
 
 // Parameter for the NTP server used for time synchronization
 iotwebconf::TextTParameter<64> settingNtpServerParam =
