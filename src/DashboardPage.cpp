@@ -57,6 +57,20 @@ const char PAGE_HEAD[] PROGMEM = R"HTML(<!DOCTYPE html><html lang="en"><head>
     margin: 0 0 12px 0;
     text-transform: uppercase;
   }
+  .status-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .status-times {
+    text-align: right;
+    font-size: 0.68rem;
+    line-height: 1.5;
+    color: var(--text-muted);
+    white-space: nowrap;
+    margin-top: 18px;
+  }
   .big-number {
     font-size: 3rem;
     font-weight: 700;
@@ -426,7 +440,10 @@ String renderDashboardPage(const DashboardData &data) {
 
     // Light status card
     html += "<div class=\"card grid-relay\"><p class=\"card-title\">Light status</p>";
+    html += "<div class=\"status-row\">";
     html += data.relayState ? "<div class=\"big-number status-on\">ON</div>" : "<div class=\"big-number status-off\">OFF</div>";
+    html += "<div class=\"status-times\"><div>On: " + data.lastOnTimeString + "</div><div>Off: " + data.lastOffTimeString + "</div></div>";
+    html += "</div>";
     html += "<p class=\"sub-label\">Light level: " + String(data.lightLevel) + "</p>";
     int percent = constrain(map(data.lightLevel, 0, 1023, 0, 100), 0, 100);
     html += "<div class=\"progress-track\"><div class=\"progress-fill\" style=\"width: " + String(percent) + "%\"></div></div>";

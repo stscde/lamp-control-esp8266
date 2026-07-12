@@ -28,6 +28,8 @@ struct DashboardData {
     int delaySeconds;
     int currLightConditionCycles;
     LampMode lampMode;
+    String lastOnTimeString;
+    String lastOffTimeString;
 
     const char *ntpServer;
     const char *timezone;

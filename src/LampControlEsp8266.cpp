@@ -15,6 +15,10 @@
 // Relay status 0 = off, 1 = on
 int relayState = 0;
 
+// epoch time of the last relay on/off switch, or 0 if it hasn't happened yet
+time_t lastRelayOnTime = 0;
+time_t lastRelayOffTime = 0;
+
 // Turn relay off because it is dark?
 bool lightConditionDark = false;
 
@@ -236,6 +240,7 @@ void switchRelayOn() {
     digitalWrite(D5, LOW);   // Relay on
     digitalWrite(D8, HIGH);  // LED on
     relayState = 1;
+    lastRelayOnTime = time(nullptr);
 }
 
 /**
@@ -245,6 +250,7 @@ void switchRelayOff() {
     digitalWrite(D5, HIGH);  // Relay off
     digitalWrite(D8, LOW);   // LED off
     relayState = 0;
+    lastRelayOffTime = time(nullptr);
 }
 
 /**
@@ -545,6 +551,23 @@ bool ntpDailySyncTimerCallback(void *argument) {
 }
 
 /**
+ * Formats an epoch time (per the configured timezone) as "YYYY-MM-DD HH:MM:SS ZZZ".
+ * Returns "never" if the event hasn't happened yet (epoch == 0), or "not yet synchronized"
+ * if it happened before NTP had a chance to synchronize the clock.
+ */
+String formatEpochTimeString(time_t epoch) {
+    if (epoch == 0) {
+        return "never";
+    }
+    if (epoch < NTP_SYNC_MIN_EPOCH) {
+        return "not yet synchronized";
+    }
+    char timeBuffer[32];
+    strftime(timeBuffer, sizeof(timeBuffer), "%Y-%m-%d %H:%M:%S %Z", localtime(&epoch));
+    return String(timeBuffer);
+}
+
+/**
  * Returns the current local time (per the configured timezone) formatted as
  * "YYYY-MM-DD HH:MM:SS ZZZ", or a placeholder string if NTP has not synchronized yet.
  */
@@ -553,9 +576,7 @@ String getCurrentTimeString() {
     if (now < NTP_SYNC_MIN_EPOCH) {
         return "not yet synchronized";
     }
-    char timeBuffer[32];
-    strftime(timeBuffer, sizeof(timeBuffer), "%Y-%m-%d %H:%M:%S %Z", localtime(&now));
-    return String(timeBuffer);
+    return formatEpochTimeString(now);
 }
 
 void wifiConnected() {
@@ -583,6 +604,8 @@ void handleRoot() {
     data.delaySeconds = settingDelayParam.value();
     data.currLightConditionCycles = currLightConditionCycles;
     data.lampMode = lampMode;
+    data.lastOnTimeString = formatEpochTimeString(lastRelayOnTime);
+    data.lastOffTimeString = formatEpochTimeString(lastRelayOffTime);
     data.ntpServer = settingNtpServerParam.value();
     data.timezone = settingTimezoneParam.value();
     data.wifiSsid = iotWebConf.getWifiSsidParameter()->valueBuffer;
