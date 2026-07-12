@@ -85,6 +85,12 @@ Instead of (or in addition to) the web config page, you can configure WiFi crede
 2. Within 30 seconds of boot, press `s` + Enter to open the settings menu.
 3. Follow the on-screen menu to set the WiFi SSID, WiFi password, or config portal password, or to reset all settings to defaults.
 
+## Change history
+
+- **2022-12-31** — Initial commit.
+- **2026-07-05** — Added NTP time sync and timezone settings; added the live web dashboard with rolling light-level charts (last 15 minutes / last 24 hours); raised the max dark-level setting to 1024 to support brighter environments; added the serial settings menu for basic config and factory reset; general README improvements.
+- **2026-07-12** — Added last switched-on/off timestamps to the Light status dashboard card.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
